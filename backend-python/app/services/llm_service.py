@@ -56,7 +56,7 @@ async def chat_with_mimo(message: str, user_emotion: str = None) -> str:
             {"role": "user", "content": message},
         ],
         temperature=0.7,
-        max_tokens=2048,
+        max_tokens=512,
     )
     msg = response.choices[0].message
     return msg.content or ""
@@ -73,7 +73,7 @@ async def chat_with_rag(message: str, user_emotion: str = None) -> str:
         model=settings.mimo_model,
         messages=messages,
         temperature=0.7,
-        max_tokens=2048,
+        max_tokens=512,
     )
     msg = response.choices[0].message
     return msg.content or ""
@@ -96,8 +96,9 @@ async def chat_stream(message: str, context_chunks: list[str] = None, user_emoti
         model=settings.mimo_model,
         messages=messages,
         temperature=0.7,
-        max_tokens=2048,
+        max_tokens=512,
         stream=True,
+        stop=["\n\n\n"],
     )
 
     async for chunk in response:

@@ -88,19 +88,20 @@ async def chat(request: ChatRequest):
     # 情感检测
     expression = await detect_expression(reply)
 
-    # TTS 按句合成，剥离 Markdown 符号便于朗读
+    # TTS 并行合成（非流式端点），剥离 Markdown 符号便于朗读
     audio_list = []
     try:
         sentences = _split_sentences(reply)
-        for sentence in sentences:
-            clean_sentence = strip_markdown(sentence)
-            if clean_sentence.strip():
-                try:
-                    audio_bytes = await tts_service.synthesize(clean_sentence.strip())
-                    if audio_bytes:
-                        audio_list.append(base64.b64encode(audio_bytes).decode())
-                except Exception as e:
-                    logger.warning(f"句子 TTS 失败: {e}")
+        clean_sentences = [strip_markdown(s) for s in sentences]
+        clean_sentences = [s.strip() for s in clean_sentences if s.strip()]
+        if clean_sentences:
+            tts_tasks = [tts_service.synthesize(s) for s in clean_sentences]
+            audio_results = await asyncio.gather(*tts_tasks, return_exceptions=True)
+            for result in audio_results:
+                if isinstance(result, Exception):
+                    logger.warning(f"句子 TTS 失败: {result}")
+                elif result:
+                    audio_list.append(base64.b64encode(result).decode())
     except Exception as e:
         logger.warning(f"TTS 合成失败（不影响文字回复）: {e}")
 

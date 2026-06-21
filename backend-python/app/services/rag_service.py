@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime
 from app.core.config import settings
@@ -7,6 +8,7 @@ from app.services.vector_store import query as chroma_query
 logger = logging.getLogger(__name__)
 
 DISTANCE_THRESHOLD = 0.7  # cosine 距离阈值，越小越相关
+MAX_CONTEXT_CHARS = 1500  # 上下文总长度上限，减少 LLM 输入 token
 
 
 async def retrieve_context(query: str, top_k: int = None) -> str:
@@ -16,7 +18,8 @@ async def retrieve_context(query: str, top_k: int = None) -> str:
 
     try:
         query_embedding = await embed_query(query)
-        results = chroma_query(query_embedding, top_k=top_k)
+        # ChromaDB 查询是同步阻塞的，用 to_thread 避免阻塞事件循环
+        results = await asyncio.to_thread(chroma_query, query_embedding, top_k=top_k)
     except Exception as e:
         logger.warning(f"知识库检索失败，将使用无上下文模式: {e}")
         return ""
@@ -37,6 +40,11 @@ async def retrieve_context(query: str, top_k: int = None) -> str:
         return ""
 
     context = "\n\n".join(context_parts)
+
+    # 限制上下文总长度，减少 LLM 输入 token
+    if len(context) > MAX_CONTEXT_CHARS:
+        context = context[:MAX_CONTEXT_CHARS] + "..."
+
     logger.info(f"检索到 {len(context_parts)} 条相关资料")
     return context
 
