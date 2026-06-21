@@ -71,45 +71,9 @@ def _keyword_fallback(text: str) -> dict:
 
 async def analyze_sentiment(text: str) -> dict:
     """
-    分析文本情感，返回 {sentiment, emotion, expression, confidence}
-    失败时降级到关键词检测。
+    分析文本情感（关键词方式，快速可靠，不依赖网络）
+    返回 {sentiment, emotion, expression, confidence}
     """
     if not text or not text.strip():
         return {"sentiment": "neutral", "emotion": "neutral", "expression": "Normal", "confidence": 0.0}
-
-    # 短文本直接用关键词（节省 API 调用）
-    if len(text.strip()) <= 5:
-        return _keyword_fallback(text)
-
-    try:
-        prompt = SENTIMENT_PROMPT.format(text=text[:200])  # 截断避免 token 浪费
-        response = await _get_client().chat.completions.create(
-            model=settings.mimo_model,
-            messages=[
-                {"role": "system", "content": "你是一个情感分析引擎，只返回JSON格式的结果。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.1,  # 低温度保证一致性
-            max_tokens=100,
-        )
-
-        content = response.choices[0].message.content or ""
-        # 提取 JSON（处理可能的 markdown 包裹）
-        content = content.strip()
-        if content.startswith("```"):
-            content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-
-        result = json.loads(content)
-        emotion = result.get("emotion", "neutral")
-        expression = EMOTION_EXPRESSION_MAP.get(emotion, "Normal")
-
-        return {
-            "sentiment": result.get("sentiment", "neutral"),
-            "emotion": emotion,
-            "expression": expression,
-            "confidence": float(result.get("confidence", 0.5)),
-        }
-
-    except Exception as e:
-        logger.warning(f"LLM 情感分析失败，降级到关键词: {e}")
-        return _keyword_fallback(text)
+    return _keyword_fallback(text)

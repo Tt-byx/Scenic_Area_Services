@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import logging
@@ -187,84 +188,122 @@ async def chat_stream_endpoint(
             yield _sse_event("done", {"session_id": session_id, "total_text": ""})
             return
 
-        # 用户情绪检测
-        try:
-            sentiment_result = await analyze_sentiment(input_text)
-            user_emotion = sentiment_result.get("emotion", "neutral")
-        except Exception:
-            user_emotion = "neutral"
+        # ── 优化：情感分析 + RAG 并行执行 ──
+        sentiment_task = asyncio.create_task(analyze_sentiment(input_text))
+        rag_task = asyncio.create_task(retrieve_context(input_text))
 
-        # RAG 检索知识库
+        sentiment_result, context_str = await asyncio.gather(sentiment_task, rag_task)
+        user_emotion = sentiment_result.get("emotion", "neutral") if sentiment_result else "neutral"
+
+        # 构建上下文
         context_chunks = []
-        try:
-            context_str = await retrieve_context(input_text)
-            if context_str:
-                context_chunks = [context_str]
-        except Exception as e:
-            logger.warning(f"RAG search failed: {e}")
-
-        # 将用户情绪注入上下文
+        if context_str:
+            context_chunks = [context_str]
         if user_emotion and user_emotion != "neutral":
             context_chunks = [f"[用户当前情绪: {user_emotion}]"] + context_chunks
 
-        # 流式生成回答 + 逐句合成语音
+        # ── 优化：TTS 异步队列，不阻塞 LLM 流读取 ──
+        audio_queue = asyncio.Queue()
+
+        async def tts_worker(sentence: str, idx: int):
+            """后台 TTS 任务：合成音频并放入队列"""
+            try:
+                clean = strip_markdown(sentence.strip())
+                if clean:
+                    audio_bytes = await tts_service.synthesize(clean)
+                    if audio_bytes:
+                        audio_b64 = base64.b64encode(audio_bytes).decode()
+                        await audio_queue.put((idx, audio_b64))
+            except Exception as e:
+                logger.warning(f"TTS failed for sentence {idx}: {e}")
+                await audio_queue.put((idx, None))
+
+        # 流式生成回答，TTS 异步执行不阻塞
         sentence_buffer = ""
         end_marks = set("。！？；\n")
         first_expression_sent = False
+        tts_counter = 0
+        tts_tasks = []
 
-        try:
-            async for text_chunk in chat_stream(input_text, context_chunks):
-                sentence_buffer += text_chunk
-                full_text += text_chunk
-                yield _sse_event("text_chunk", {"text": text_chunk})
+        async def llm_producer():
+            """LLM 生产者：读取流式 token，文本直接 yield，句子交给 TTS 后台"""
+            nonlocal sentence_buffer, first_expression_sent, tts_counter, full_text
+            try:
+                async for text_chunk in chat_stream(input_text, context_chunks):
+                    sentence_buffer += text_chunk
+                    full_text += text_chunk
+                    await audio_queue.put(("text", text_chunk))
 
-                # 收集到一定文字后发送表情（不等句子完成）
-                if not first_expression_sent and len(full_text) > 10:
-                    first_expression_sent = True
-                    expression = _keyword_fallback_expression(full_text)
-                    yield _sse_event("expression", {"expression": expression})
+                    # 收集到一定文字后发送表情
+                    if not first_expression_sent and len(full_text) > 10:
+                        first_expression_sent = True
+                        expression = _keyword_fallback_expression(full_text)
+                        await audio_queue.put(("expression", expression))
 
-                # 遇到句号等标点，合成这一句的语音（剥离Markdown便于朗读）
-                if sentence_buffer and sentence_buffer[-1] in end_marks:
-                    sentence = strip_markdown(sentence_buffer.strip())
-                    if sentence:
-                        try:
-                            audio_bytes = await tts_service.synthesize(sentence)
-                            if audio_bytes:
-                                audio_b64 = base64.b64encode(audio_bytes).decode()
-                                yield _sse_event("audio_chunk", {
-                                    "audio": audio_b64,
-                                    "format": "mp3"
-                                })
-                        except Exception as e:
-                            logger.warning(f"TTS failed: {e}")
-                    sentence_buffer = ""
+                    # 遇到句号等标点，将句子交给后台 TTS（不阻塞）
+                    if sentence_buffer and sentence_buffer[-1] in end_marks:
+                        sentence = sentence_buffer.strip()
+                        if sentence:
+                            task = asyncio.create_task(tts_worker(sentence, tts_counter))
+                            tts_tasks.append(task)
+                            tts_counter += 1
+                        sentence_buffer = ""
+            except Exception as e:
+                logger.error(f"LLM failed: {e}")
+                await audio_queue.put(("error", str(e)))
 
-        except Exception as e:
-            logger.error(f"LLM failed: {e}")
-            yield _sse_event("error", {"message": f"AI error: {str(e)}"})
+        # 启动 LLM 生产者（在后台运行）
+        llm_task = asyncio.create_task(llm_producer())
+
+        # 消费者：从队列中取出结果并 yield
+        tts_done_count = 0
+        while not llm_task.done() or not audio_queue.empty() or tts_done_count < tts_counter:
+            try:
+                item = await asyncio.wait_for(audio_queue.get(), timeout=0.1)
+            except asyncio.TimeoutError:
+                if llm_task.done() and audio_queue.empty() and tts_done_count >= tts_counter:
+                    break
+                continue
+
+            if item[0] == "text":
+                yield _sse_event("text_chunk", {"text": item[1]})
+            elif item[0] == "expression":
+                yield _sse_event("expression", {"expression": item[1]})
+            elif item[0] == "error":
+                yield _sse_event("error", {"message": f"AI error: {item[1]}"})
+            else:
+                # TTS 结果 (idx, audio_b64)
+                _, audio_b64 = item
+                tts_done_count += 1
+                if audio_b64:
+                    yield _sse_event("audio_chunk", {"audio": audio_b64, "format": "mp3"})
+
+        # 等待所有 TTS 任务完成（处理剩余）
+        if tts_tasks:
+            await asyncio.gather(*tts_tasks, return_exceptions=True)
+            # 收集队列中剩余的 TTS 结果
+            while not audio_queue.empty():
+                item = audio_queue.get_nowait()
+                if isinstance(item, tuple) and len(item) == 2 and item[0] not in ("text", "expression", "error"):
+                    _, audio_b64 = item
+                    if audio_b64:
+                        yield _sse_event("audio_chunk", {"audio": audio_b64, "format": "mp3"})
 
         # 处理剩余未合成的文本
         if sentence_buffer.strip():
-            if not first_expression_sent:
-                expression = await detect_expression(full_text)
-                yield _sse_event("expression", {"expression": expression})
             try:
                 clean_remaining = strip_markdown(sentence_buffer.strip())
                 if clean_remaining:
                     audio_bytes = await tts_service.synthesize(clean_remaining)
                     if audio_bytes:
                         audio_b64 = base64.b64encode(audio_bytes).decode()
-                        yield _sse_event("audio_chunk", {
-                            "audio": audio_b64,
-                            "format": "mp3"
-                        })
+                        yield _sse_event("audio_chunk", {"audio": audio_b64, "format": "mp3"})
             except Exception as e:
                 logger.warning(f"TTS final failed: {e}")
 
         # 如果没有任何句子完成（极短回复），发送默认表情
         if not first_expression_sent:
-            yield _sse_event("expression", {"expression": await detect_expression(full_text)})
+            yield _sse_event("expression", {"expression": _keyword_fallback_expression(full_text)})
 
         yield _sse_event("done", {
             "session_id": session_id,
