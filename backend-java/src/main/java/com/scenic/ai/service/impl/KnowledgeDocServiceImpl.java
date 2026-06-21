@@ -43,7 +43,7 @@ public class KnowledgeDocServiceImpl implements KnowledgeDocService {
     private String pythonBackendUrl;
 
     @Override
-    public KnowledgeDoc upload(String title, MultipartFile file) {
+    public KnowledgeDoc upload(String title, MultipartFile file, String category, String scenicArea) {
         // 修复标题编码
         title = fixFilenameEncoding(title);
 
@@ -70,6 +70,8 @@ public class KnowledgeDocServiceImpl implements KnowledgeDocService {
         doc.setFileName(originalFilename);
         doc.setFileUrl(filePath);
         doc.setFileType(fileType);
+        doc.setCategory(category != null ? category : "未分类");
+        doc.setScenicArea(scenicArea != null ? scenicArea : "");
         doc.setVectorStatus(0); // 待处理
         doc.setProcessProgress(0);
         doc.setStatus(1);
@@ -190,6 +192,55 @@ public class KnowledgeDocServiceImpl implements KnowledgeDocService {
                         .eq(KnowledgeDoc::getStatus, 1)
                         .orderByDesc(KnowledgeDoc::getCreatedAt)
         );
+    }
+
+    @Override
+    public List<KnowledgeDoc> listFiltered(String category, String scenicArea) {
+        LambdaQueryWrapper<KnowledgeDoc> wrapper = new LambdaQueryWrapper<KnowledgeDoc>()
+                .eq(KnowledgeDoc::getStatus, 1);
+        if (category != null && !category.isEmpty()) {
+            wrapper.eq(KnowledgeDoc::getCategory, category);
+        }
+        if (scenicArea != null && !scenicArea.isEmpty()) {
+            wrapper.like(KnowledgeDoc::getScenicArea, scenicArea);
+        }
+        wrapper.orderByDesc(KnowledgeDoc::getCreatedAt);
+        return knowledgeDocMapper.selectList(wrapper);
+    }
+
+    @Override
+    public KnowledgeDoc update(Long id, KnowledgeDoc updateData) {
+        KnowledgeDoc doc = knowledgeDocMapper.selectById(id);
+        if (doc == null) {
+            throw new RuntimeException("文档不存在: " + id);
+        }
+
+        boolean contentChanged = false;
+        if (updateData.getTitle() != null) {
+            doc.setTitle(updateData.getTitle());
+        }
+        if (updateData.getContent() != null && !updateData.getContent().equals(doc.getContent())) {
+            doc.setContent(updateData.getContent());
+            contentChanged = true;
+        }
+        if (updateData.getCategory() != null) {
+            doc.setCategory(updateData.getCategory());
+        }
+        if (updateData.getScenicArea() != null) {
+            doc.setScenicArea(updateData.getScenicArea());
+        }
+        if (updateData.getLastModifiedBy() != null) {
+            doc.setLastModifiedBy(updateData.getLastModifiedBy());
+        }
+        doc.setUpdatedAt(LocalDateTime.now());
+        knowledgeDocMapper.updateById(doc);
+
+        // 如果内容变更，自动触发重向量化
+        if (contentChanged) {
+            reprocess(id);
+        }
+
+        return knowledgeDocMapper.selectById(id);
     }
 
     @Override

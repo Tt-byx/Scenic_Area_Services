@@ -9,4 +9,7 @@ public interface AnalyticsService {
     Map<String, Object> getSatisfactionDistribution();
     Map<String, Object> getPeakPeriods();
     Map<String, Object> getTopAttractions();
+    Map<String, Object> getFilteredData(String attraction, String startDate, String endDate,
+                                         String ageGroup, String gender, int page, int size);
+    Map<String, Object> getReportData();
 }

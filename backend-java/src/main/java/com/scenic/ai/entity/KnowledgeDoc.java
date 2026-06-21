@@ -22,6 +22,9 @@ public class KnowledgeDoc {
     private Integer vectorStatus;
     private String processStage;    // parsing/chunking/embedding/storing/completed
     private Integer processProgress; // 0-100
+    private String category;        // 分类标签
+    private String scenicArea;      // 关联景区
+    private String lastModifiedBy;  // 最后修改人
     private Integer status;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

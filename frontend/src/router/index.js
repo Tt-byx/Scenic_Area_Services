@@ -72,6 +72,16 @@ const routes = [
         name: 'AdminSystem',
         component: () => import('@/views/admin/SystemConfigView.vue'),
       },
+      {
+        path: 'ai-assistant',
+        name: 'AdminAIAssistant',
+        component: () => import('@/views/admin/AdminAIView.vue'),
+      },
+      {
+        path: 'marketing-report',
+        name: 'AdminMarketingReport',
+        component: () => import('@/views/admin/MarketingReportView.vue'),
+      },
     ],
   },
 ]

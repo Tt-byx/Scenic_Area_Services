@@ -13,7 +13,7 @@ def _get_client():
     global _client
     if _client is None:
         _client = AsyncOpenAI(http_client=httpx.AsyncClient(trust_env=False,
-            timeout=httpx.Timeout(connect=5.0, read=15.0, write=5.0)),
+            timeout=httpx.Timeout(timeout=30.0, connect=5.0, read=15.0, write=5.0)),
             api_key=settings.embedding_api_key or "not-set",
             base_url=settings.embedding_base_url,
         )

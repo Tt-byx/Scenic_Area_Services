@@ -221,23 +221,30 @@ watch(() => chatStore.messages, (msgs) => {
   }
 }, { deep: true })
 
-// ── 口型同步 ──
+// ── 口型同步（改为音频驱动，替代正弦波） ──
 watch(() => chatStore.audioPlaying, (playing) => {
   if (_mouthRAF) { cancelAnimationFrame(_mouthRAF); _mouthRAF = 0 }
-  if (playing) {
-    const tick = () => {
-      if (!live2dRef.value || !chatStore.audioPlaying) {
-        live2dRef.value?.setLipSync(0)
-        _mouthRAF = 0
-        return
+  if (playing && live2dRef.value) {
+    // 优先使用 AudioPlayer 的 AnalyserNode 驱动口型（真实音频分析）
+    const analyser = chatStore.audioPlayer?.analyser
+    if (analyser) {
+      live2dRef.value.startLipSyncFromAnalyser(analyser)
+    } else {
+      // AnalyserNode 不可用时，回退到简单正弦波
+      const tick = () => {
+        if (!live2dRef.value || !chatStore.audioPlaying) {
+          live2dRef.value?.setLipSync(0)
+          _mouthRAF = 0
+          return
+        }
+        const open = 0.1 + 0.9 * Math.abs(Math.sin(performance.now() / 1000 * 6))
+        live2dRef.value.setLipSync(open)
+        _mouthRAF = requestAnimationFrame(tick)
       }
-      const open = 0.1 + 0.9 * Math.abs(Math.sin(performance.now() / 1000 * 6))
-      live2dRef.value.setLipSync(open)
       _mouthRAF = requestAnimationFrame(tick)
     }
-    _mouthRAF = requestAnimationFrame(tick)
   } else {
-    live2dRef.value?.setLipSync(0)
+    live2dRef.value?.stopLipSync()
   }
 })
 

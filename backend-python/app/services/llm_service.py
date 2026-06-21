@@ -1,7 +1,9 @@
+import logging
 from openai import AsyncOpenAI
 import httpx
 from app.core.config import settings
 
+logger = logging.getLogger(__name__)
 _client = None
 
 
@@ -27,24 +29,24 @@ SYSTEM_PROMPT = """你是一个专业的景区导游AI数字人助手。你的�
 
 
 
-# ?? ? ??????
+# ── 用户情绪→回答风格引导 ──
 EMOTION_STYLE_GUIDE = {
-    "happy": "??????????????????????????????",
-    "excited": "????????????????????????????",
-    "grateful": "????????????????????????????",
-    "surprised": "????????????????????????",
-    "confused": "???????????????????????????????????",
-    "angry": "??????????????????????????????????",
-    "worried": "???????????????????????????????",
-    "sad": "????????????????????????????????",
+    "happy": "用户心情很好，回答时用更热情、活泼的语气，多用感叹句，配合用户的开心情绪",
+    "excited": "用户很兴奋，回答时语气要同样振奋，多分享有趣的信息，用感叹号表达热情",
+    "grateful": "用户在表达感谢，回答时语气温暖亲切，表示很高兴能帮到他",
+    "surprised": "用户很惊讶，回答时可以用\"确实\"\"没错\"等确认语气，再补充有趣的信息",
+    "confused": "用户有些困惑，回答时要更耐心、条理清晰，用简单易懂的语言解释，分步骤说明",
+    "angry": "用户可能不满，回答时语气要平和、真诚，先表示理解他的感受，再提供解决方案",
+    "worried": "用户有些担心，回答时语气要安慰、安抚，提供明确的信息消除顾虑",
+    "sad": "用户心情不好，回答时语气要温柔、关怀，适当安慰并提供帮助",
 }
 
 
 def _build_system_prompt(user_emotion: str = None) -> str:
-    """?????????????"""
+    """根据用户情绪构建系统提示"""
     prompt = SYSTEM_PROMPT
     if user_emotion and user_emotion in EMOTION_STYLE_GUIDE:
-        prompt += f"\n\n????{EMOTION_STYLE_GUIDE[user_emotion]}"
+        prompt += f"\n\n当前情境：{EMOTION_STYLE_GUIDE[user_emotion]}"
     return prompt
 
 async def chat_with_mimo(message: str, user_emotion: str = None) -> str:
@@ -101,10 +103,38 @@ async def chat_stream(message: str, context_chunks: list[str] = None, user_emoti
         stop=["\n\n\n"],
     )
 
+    content_yielded = False
+    reasoning_text = ""
+
     async for chunk in response:
         if chunk.choices:
             delta = chunk.choices[0].delta
-            # 只输出正式回答，跳过思考过程（reasoning_content）
+            # 正式回答内容
             text = delta.content
             if text:
+                content_yielded = True
                 yield text
+            # 收集 reasoning_content（模型思考过程），作为 fallback
+            reasoning = getattr(delta, 'reasoning_content', None)
+            if reasoning:
+                reasoning_text += reasoning
+
+    # Fallback：如果正式内容为空但有思考内容，尝试用非流式重新请求
+    if not content_yielded:
+        logger.warning(f"[chat_stream] 流式返回0字，reasoning={len(reasoning_text)}字，尝试非流式fallback")
+        try:
+            fallback_resp = await _get_client().chat.completions.create(
+                model=settings.mimo_model,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=512,
+                stop=["\n\n\n"],
+            )
+            fallback_text = fallback_resp.choices[0].message.content or ""
+            if fallback_text.strip():
+                logger.info(f"[chat_stream] fallback成功: {fallback_text[:50]}")
+                yield fallback_text
+            else:
+                logger.error(f"[chat_stream] fallback也返回空")
+        except Exception as e:
+            logger.error(f"[chat_stream] fallback失败: {e}")

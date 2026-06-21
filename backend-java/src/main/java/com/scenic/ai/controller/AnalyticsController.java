@@ -55,4 +55,23 @@ public class AnalyticsController {
     public Result<Map<String, Object>> attractions() {
         return Result.success(analyticsService.getTopAttractions());
     }
+
+    /** 分页筛选行为数据 */
+    @GetMapping("/data")
+    public Result<Map<String, Object>> filteredData(
+            @RequestParam(required = false) String attraction,
+            @RequestParam(required = false) String startDate,
+            @RequestParam(required = false) String endDate,
+            @RequestParam(required = false) String ageGroup,
+            @RequestParam(required = false) String gender,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return Result.success(analyticsService.getFilteredData(attraction, startDate, endDate, ageGroup, gender, page, size));
+    }
+
+    /** 营销分析报告数据 */
+    @GetMapping("/report")
+    public Result<Map<String, Object>> report() {
+        return Result.success(analyticsService.getReportData());
+    }
 }

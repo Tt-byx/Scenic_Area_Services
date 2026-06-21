@@ -1,9 +1,11 @@
 import request from './request'
 
-export function uploadKnowledge(file, title, onUploadProgress) {
+export function uploadKnowledge(file, title, category, scenicArea, onUploadProgress) {
   const formData = new FormData()
   formData.append('file', file)
   formData.append('title', title)
+  if (category) formData.append('category', category)
+  if (scenicArea) formData.append('scenicArea', scenicArea)
   return request.post('/api/knowledge/upload', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
     timeout: 120000,
@@ -15,8 +17,8 @@ export function processKnowledge(id) {
   return request.post(`/api/knowledge/process/${id}`)
 }
 
-export function getKnowledgeList() {
-  return request.get('/api/knowledge/list')
+export function getKnowledgeList(params) {
+  return request.get('/api/knowledge/list', { params })
 }
 
 export function deleteKnowledge(id) {
@@ -25,4 +27,8 @@ export function deleteKnowledge(id) {
 
 export function reprocessKnowledge(id) {
   return request.post(`/api/knowledge/reprocess/${id}`)
+}
+
+export function updateKnowledge(id, data) {
+  return request.put(`/api/knowledge/${id}`, data)
 }

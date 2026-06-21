@@ -12,6 +12,8 @@ const menuItems = [
   { path: '/admin/visitor-profiles', icon: 'User', label: '游客画像' },
   { path: '/admin/knowledge', icon: 'FolderOpened', label: '知识库' },
   { path: '/admin/conversations', icon: 'ChatDotRound', label: '对话记录' },
+  { path: '/admin/ai-assistant', icon: 'ChatLineSquare', label: 'AI助手' },
+  { path: '/admin/marketing-report', icon: 'DataAnalysis', label: '营销报告' },
   { path: '/admin/digital-human', icon: 'Avatar', label: '数字人配置' },
   { path: '/admin/system', icon: 'Setting', label: '系统管理' },
 ]

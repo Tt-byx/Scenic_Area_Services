@@ -277,4 +277,161 @@ public class AnalyticsServiceImpl implements AnalyticsService {
         result.put("data", rows);
         return result;
     }
+
+    @Override
+    public Map<String, Object> getFilteredData(String attraction, String startDate, String endDate,
+                                                String ageGroup, String gender, int page, int size) {
+        LambdaQueryWrapper<TourismData> wrapper = new LambdaQueryWrapper<>();
+        if (attraction != null && !attraction.isEmpty()) {
+            wrapper.eq(TourismData::getAttractionName, attraction);
+        }
+        if (startDate != null && !startDate.isEmpty()) {
+            wrapper.ge(TourismData::getVisitDate, LocalDate.parse(startDate));
+        }
+        if (endDate != null && !endDate.isEmpty()) {
+            wrapper.le(TourismData::getVisitDate, LocalDate.parse(endDate));
+        }
+        if (gender != null && !gender.isEmpty()) {
+            wrapper.eq(TourismData::getGender, gender);
+        }
+        // ageGroup: "18-25", "26-35", "36-45", "46-55", "55+"
+        if (ageGroup != null && !ageGroup.isEmpty()) {
+            switch (ageGroup) {
+                case "<18" -> wrapper.lt(TourismData::getAge, 18);
+                case "18-25" -> wrapper.ge(TourismData::getAge, 18).le(TourismData::getAge, 25);
+                case "26-35" -> wrapper.ge(TourismData::getAge, 26).le(TourismData::getAge, 35);
+                case "36-45" -> wrapper.ge(TourismData::getAge, 36).le(TourismData::getAge, 45);
+                case "46-55" -> wrapper.ge(TourismData::getAge, 46).le(TourismData::getAge, 55);
+                case "55+" -> wrapper.ge(TourismData::getAge, 55);
+            }
+        }
+        wrapper.orderByDesc(TourismData::getCreatedAt);
+
+        // 分页
+        wrapper.last("LIMIT " + size + " OFFSET " + (page - 1) * size);
+        List<TourismData> records = tourismDataMapper.selectList(wrapper);
+
+        // 总数（用同样条件但去掉 LIMIT）
+        LambdaQueryWrapper<TourismData> countWrapper = new LambdaQueryWrapper<>();
+        if (attraction != null && !attraction.isEmpty()) {
+            countWrapper.eq(TourismData::getAttractionName, attraction);
+        }
+        if (startDate != null && !startDate.isEmpty()) {
+            countWrapper.ge(TourismData::getVisitDate, LocalDate.parse(startDate));
+        }
+        if (endDate != null && !endDate.isEmpty()) {
+            countWrapper.le(TourismData::getVisitDate, LocalDate.parse(endDate));
+        }
+        if (gender != null && !gender.isEmpty()) {
+            countWrapper.eq(TourismData::getGender, gender);
+        }
+        if (ageGroup != null && !ageGroup.isEmpty()) {
+            switch (ageGroup) {
+                case "<18" -> countWrapper.lt(TourismData::getAge, 18);
+                case "18-25" -> countWrapper.ge(TourismData::getAge, 18).le(TourismData::getAge, 25);
+                case "26-35" -> countWrapper.ge(TourismData::getAge, 26).le(TourismData::getAge, 35);
+                case "36-45" -> countWrapper.ge(TourismData::getAge, 36).le(TourismData::getAge, 45);
+                case "46-55" -> countWrapper.ge(TourismData::getAge, 46).le(TourismData::getAge, 55);
+                case "55+" -> countWrapper.ge(TourismData::getAge, 55);
+            }
+        }
+        Long total = tourismDataMapper.selectCount(countWrapper);
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("records", records);
+        result.put("total", total);
+        result.put("page", page);
+        result.put("size", size);
+        return result;
+    }
+
+    @Override
+    public Map<String, Object> getReportData() {
+        Map<String, Object> report = new HashMap<>();
+
+        // 1. 高价值画像：消费TOP10
+        List<Map<String, Object>> topSpenders = tourismDataMapper.selectMaps(
+                new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<TourismData>()
+                        .select("tourist_id", "nickname",
+                                "SUM(total_cost) as total_spent",
+                                "COUNT(*) as visit_count",
+                                "AVG(stay_duration) as avg_stay")
+                        .groupBy("tourist_id", "nickname")
+                        .orderByDesc("total_spent")
+                        .last("LIMIT 10"));
+        report.put("topSpenders", topSpenders);
+
+        // 2. 频次TOP10
+        List<Map<String, Object>> frequentVisitors = tourismDataMapper.selectMaps(
+                new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<TourismData>()
+                        .select("tourist_id", "nickname",
+                                "COUNT(*) as visit_count",
+                                "SUM(total_cost) as total_spent")
+                        .groupBy("tourist_id", "nickname")
+                        .orderByDesc("visit_count")
+                        .last("LIMIT 10"));
+        report.put("frequentVisitors", frequentVisitors);
+
+        // 3. 消费偏好：按年龄段
+        List<Map<String, Object>> consumptionByAge = tourismDataMapper.selectMaps(
+                new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<TourismData>()
+                        .select("CASE " +
+                                "  WHEN age < 18 THEN '18岁以下' " +
+                                "  WHEN age BETWEEN 18 AND 25 THEN '18-25岁' " +
+                                "  WHEN age BETWEEN 26 AND 35 THEN '26-35岁' " +
+                                "  WHEN age BETWEEN 36 AND 45 THEN '36-45岁' " +
+                                "  WHEN age BETWEEN 46 AND 55 THEN '46-55岁' " +
+                                "  ELSE '55岁以上' END as age_group",
+                                "AVG(ticket_cost) as avg_ticket",
+                                "AVG(food_cost) as avg_food",
+                                "AVG(shopping_cost) as avg_shopping",
+                                "AVG(transport_cost) as avg_transport",
+                                "AVG(entertainment_cost) as avg_entertainment")
+                        .groupBy("age_group"));
+        report.put("consumptionByAge", consumptionByAge);
+
+        // 4. 消费偏好：按性别
+        List<Map<String, Object>> consumptionByGender = tourismDataMapper.selectMaps(
+                new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<TourismData>()
+                        .select("gender",
+                                "AVG(ticket_cost) as avg_ticket",
+                                "AVG(food_cost) as avg_food",
+                                "AVG(shopping_cost) as avg_shopping",
+                                "AVG(transport_cost) as avg_transport",
+                                "AVG(entertainment_cost) as avg_entertainment")
+                        .groupBy("gender"));
+        report.put("consumptionByGender", consumptionByGender);
+
+        // 5. 逗留时长与消费关联
+        List<Map<String, Object>> dwellConsumption = tourismDataMapper.selectMaps(
+                new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<TourismData>()
+                        .select("CASE " +
+                                "  WHEN stay_duration < 2 THEN '2小时以内' " +
+                                "  WHEN stay_duration BETWEEN 2 AND 4 THEN '2-4小时' " +
+                                "  WHEN stay_duration BETWEEN 4 AND 6 THEN '4-6小时' " +
+                                "  WHEN stay_duration BETWEEN 6 AND 8 THEN '6-8小时' " +
+                                "  ELSE '8小时以上' END as stay_group",
+                                "AVG(total_cost) as avg_cost",
+                                "AVG(satisfaction) as avg_satisfaction",
+                                "COUNT(*) as count")
+                        .groupBy("stay_group"));
+        report.put("dwellConsumption", dwellConsumption);
+
+        // 6. 淡旺季趋势
+        List<Map<String, Object>> seasonalTrend = tourismDataMapper.selectMaps(
+                new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<TourismData>()
+                        .select("DATE_FORMAT(visit_date, '%Y-%m') as month",
+                                "COUNT(*) as visitor_count",
+                                "SUM(total_cost) as total_revenue",
+                                "AVG(satisfaction) as avg_satisfaction")
+                        .groupBy("DATE_FORMAT(visit_date, '%Y-%m')")
+                        .orderByAsc("month"));
+        report.put("seasonalTrend", seasonalTrend);
+
+        // 7. 数据摘要文本（供AI生成建议）
+        Long totalRecords = tourismDataMapper.selectCount(null);
+        report.put("totalRecords", totalRecords);
+
+        return report;
+    }
 }

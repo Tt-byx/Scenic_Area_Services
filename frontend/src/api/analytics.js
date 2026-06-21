@@ -44,3 +44,13 @@ export function getFeedbackStats() {
 export function getVisitorProfiles() {
   return request.get('/api/visitor-profiles')
 }
+
+/** 分页筛选行为数据 */
+export function getFilteredAnalyticsData(params) {
+  return request.get('/api/analytics/data', { params })
+}
+
+/** 营销分析报告数据 */
+export function getMarketingReport() {
+  return request.get('/api/analytics/report')
+}

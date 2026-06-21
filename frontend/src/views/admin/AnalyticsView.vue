@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import * as echarts from 'echarts'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -9,6 +9,7 @@ import {
   getSatisfaction,
   getPeakPeriods,
   getTopAttractions,
+  getFilteredAnalyticsData,
 } from '@/api/analytics'
 import request from '@/api/request'
 
@@ -18,6 +19,19 @@ const marketingLoading = ref(false)
 const marketingSuggestions = ref('')
 const importing = ref(false)
 const dataImported = ref(false)
+const activeTab = ref('charts')
+
+// ── Data browsing state ──
+const tableData = ref([])
+const tableTotal = ref(0)
+const tablePage = ref(1)
+const tableSize = ref(20)
+const tableLoading = ref(false)
+const filterAttraction = ref('')
+const filterStartDate = ref('')
+const filterEndDate = ref('')
+const filterAgeGroup = ref('')
+const filterGender = ref('')
 
 // Chart instances
 let consumptionChart = null
@@ -87,11 +101,56 @@ async function fetchData() {
     if (satisf?.data) renderSatisfactionChart(satisf.data)
     if (peak?.data) renderPeakChart(peak.data)
     if (attractions?.data) renderAttractionsChart(attractions.data)
+
+    dataImported.value = true
   } catch (e) {
     console.error('获取分析数据失败:', e)
   } finally {
     loading.value = false
   }
+}
+
+// ── Data browsing ──
+async function fetchTableData() {
+  tableLoading.value = true
+  try {
+    const params = {
+      page: tablePage.value,
+      size: tableSize.value,
+    }
+    if (filterAttraction.value) params.attraction = filterAttraction.value
+    if (filterStartDate.value) params.startDate = filterStartDate.value
+    if (filterEndDate.value) params.endDate = filterEndDate.value
+    if (filterAgeGroup.value) params.ageGroup = filterAgeGroup.value
+    if (filterGender.value) params.gender = filterGender.value
+    const res = await getFilteredAnalyticsData(params)
+    tableData.value = res?.records || []
+    tableTotal.value = res?.total || 0
+  } catch (e) {
+    console.error('获取数据失败:', e)
+  } finally {
+    tableLoading.value = false
+  }
+}
+
+function handleTablePageChange(page) {
+  tablePage.value = page
+  fetchTableData()
+}
+
+function handleFilterSearch() {
+  tablePage.value = 1
+  fetchTableData()
+}
+
+function clearTableFilters() {
+  filterAttraction.value = ''
+  filterStartDate.value = ''
+  filterEndDate.value = ''
+  filterAgeGroup.value = ''
+  filterGender.value = ''
+  tablePage.value = 1
+  fetchTableData()
 }
 
 // ── Chart Renderers ──
@@ -444,6 +503,12 @@ onMounted(() => {
   window.addEventListener('resize', handleResize)
 })
 
+watch(activeTab, (tab) => {
+  if (tab === 'data' && tableData.value.length === 0) {
+    fetchTableData()
+  }
+})
+
 onUnmounted(() => {
   window.removeEventListener('resize', handleResize)
   allCharts().forEach(c => c?.dispose())
@@ -487,78 +552,155 @@ function handleResize() {
       <p class="empty-desc">点击上方"导入 xlsx 数据"按钮，将游客行为分析数据导入系统</p>
     </div>
 
-    <!-- Charts Grid -->
+    <!-- Tab switcher + content -->
     <template v-if="dataImported || loading">
-      <!-- Row 1: Consumption trend (wide) + Gender (small) -->
-      <div class="charts-row">
-        <div class="panel panel--wide">
-          <div class="panel-head">
-            <span class="panel-title">月度消费趋势</span>
-            <span class="panel-hint">各消费类别的月均变化</span>
+      <el-tabs v-model="activeTab" class="analytics-tabs">
+        <el-tab-pane label="图表分析" name="charts">
+          <!-- Row 1: Consumption trend (wide) + Gender (small) -->
+          <div class="charts-row">
+            <div class="panel panel--wide">
+              <div class="panel-head">
+                <span class="panel-title">月度消费趋势</span>
+                <span class="panel-hint">各消费类别的月均变化</span>
+              </div>
+              <div id="consumption-chart" class="chart-area chart-area--tall"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-head">
+                <span class="panel-title">性别比例</span>
+              </div>
+              <div id="gender-chart" class="chart-area"></div>
+            </div>
           </div>
-          <div id="consumption-chart" class="chart-area chart-area--tall"></div>
-        </div>
-        <div class="panel">
-          <div class="panel-head">
-            <span class="panel-title">性别比例</span>
-          </div>
-          <div id="gender-chart" class="chart-area"></div>
-        </div>
-      </div>
 
-      <!-- Row 2: Age + Satisfaction + Peak -->
-      <div class="charts-row charts-row--triple">
-        <div class="panel">
-          <div class="panel-head">
-            <span class="panel-title">年龄分布</span>
+          <!-- Row 2: Age + Satisfaction + Peak -->
+          <div class="charts-row charts-row--triple">
+            <div class="panel">
+              <div class="panel-head">
+                <span class="panel-title">年龄分布</span>
+              </div>
+              <div id="age-chart" class="chart-area"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-head">
+                <span class="panel-title">满意度分布</span>
+              </div>
+              <div id="satisfaction-chart" class="chart-area"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-head">
+                <span class="panel-title">月度客流</span>
+                <span class="panel-hint">访问量 vs 独立游客</span>
+              </div>
+              <div id="peak-chart" class="chart-area"></div>
+            </div>
           </div>
-          <div id="age-chart" class="chart-area"></div>
-        </div>
-        <div class="panel">
-          <div class="panel-head">
-            <span class="panel-title">满意度分布</span>
-          </div>
-          <div id="satisfaction-chart" class="chart-area"></div>
-        </div>
-        <div class="panel">
-          <div class="panel-head">
-            <span class="panel-title">月度客流</span>
-            <span class="panel-hint">访问量 vs 独立游客</span>
-          </div>
-          <div id="peak-chart" class="chart-area"></div>
-        </div>
-      </div>
 
-      <!-- Row 3: Top Attractions (full width) -->
-      <div class="panel">
-        <div class="panel-head">
-          <span class="panel-title">热门景点 Top 10</span>
-          <span class="panel-hint">按访问量排序</span>
-        </div>
-        <div id="attractions-chart" class="chart-area chart-area--medium"></div>
-      </div>
+          <!-- Row 3: Top Attractions (full width) -->
+          <div class="panel">
+            <div class="panel-head">
+              <span class="panel-title">热门景点 Top 10</span>
+              <span class="panel-hint">按访问量排序</span>
+            </div>
+            <div id="attractions-chart" class="chart-area chart-area--medium"></div>
+          </div>
 
-      <!-- Marketing Suggestions -->
-      <div class="panel marketing-panel">
-        <div class="panel-head">
-          <span class="panel-title">AI 营销决策建议</span>
-          <el-button
-            size="small"
-            :loading="marketingLoading"
-            @click="generateMarketing"
-            class="marketing-btn"
-          >
-            <el-icon v-if="!marketingLoading" :size="14"><MagicStick /></el-icon>
-            {{ marketingLoading ? '分析中...' : '生成营销建议' }}
-          </el-button>
-        </div>
-        <div v-if="marketingSuggestions" class="marketing-content">
-          {{ marketingSuggestions }}
-        </div>
-        <div v-else class="marketing-empty">
-          点击"生成营销建议"，AI 将基于消费分析数据为您提供营销决策参考
-        </div>
-      </div>
+          <!-- Marketing Suggestions -->
+          <div class="panel marketing-panel">
+            <div class="panel-head">
+              <span class="panel-title">AI 营销决策建议</span>
+              <el-button
+                size="small"
+                :loading="marketingLoading"
+                @click="generateMarketing"
+                class="marketing-btn"
+              >
+                <el-icon v-if="!marketingLoading" :size="14"><MagicStick /></el-icon>
+                {{ marketingLoading ? '分析中...' : '生成营销建议' }}
+              </el-button>
+            </div>
+            <div v-if="marketingSuggestions" class="marketing-content">
+              {{ marketingSuggestions }}
+            </div>
+            <div v-else class="marketing-empty">
+              点击"生成营销建议"，AI 将基于消费分析数据为您提供营销决策参考
+            </div>
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="数据浏览" name="data">
+          <div class="panel">
+            <!-- Filter bar -->
+            <div class="table-filter-bar">
+              <el-input v-model="filterAttraction" placeholder="景区名称" clearable style="width: 150px" />
+              <el-select v-model="filterGender" placeholder="性别" clearable style="width: 100px">
+                <el-option label="男" value="男" />
+                <el-option label="女" value="女" />
+              </el-select>
+              <el-select v-model="filterAgeGroup" placeholder="年龄段" clearable style="width: 120px">
+                <el-option label="18岁以下" value="<18" />
+                <el-option label="18-25岁" value="18-25" />
+                <el-option label="26-35岁" value="26-35" />
+                <el-option label="36-45岁" value="36-45" />
+                <el-option label="46-55岁" value="46-55" />
+                <el-option label="55岁以上" value="55+" />
+              </el-select>
+              <el-date-picker
+                v-model="filterStartDate"
+                type="date"
+                placeholder="开始日期"
+                value-format="YYYY-MM-DD"
+                style="width: 150px"
+              />
+              <el-date-picker
+                v-model="filterEndDate"
+                type="date"
+                placeholder="结束日期"
+                value-format="YYYY-MM-DD"
+                style="width: 150px"
+              />
+              <el-button type="primary" @click="handleFilterSearch" style="background:#5a8a6a;border-color:#5a8a6a">
+                <el-icon><Search /></el-icon> 查询
+              </el-button>
+              <el-button text @click="clearTableFilters">清除</el-button>
+            </div>
+
+            <el-table :data="tableData" v-loading="tableLoading" stripe size="small" style="width: 100%">
+              <el-table-column prop="touristId" label="游客ID" width="100" />
+              <el-table-column prop="nickname" label="昵称" width="90" />
+              <el-table-column prop="age" label="年龄" width="60" align="center" />
+              <el-table-column prop="gender" label="性别" width="60" align="center" />
+              <el-table-column prop="attractionName" label="景区" min-width="120" show-overflow-tooltip />
+              <el-table-column prop="visitDate" label="到访日期" width="110" align="center" />
+              <el-table-column prop="stayDuration" label="逗留(h)" width="80" align="center">
+                <template #default="{ row }">{{ row.stayDuration ? Number(row.stayDuration).toFixed(1) : '—' }}</template>
+              </el-table-column>
+              <el-table-column prop="ticketCost" label="门票" width="70" align="right">
+                <template #default="{ row }">{{ row.ticketCost ? '¥' + Number(row.ticketCost).toFixed(0) : '—' }}</template>
+              </el-table-column>
+              <el-table-column prop="foodCost" label="餐饮" width="70" align="right">
+                <template #default="{ row }">{{ row.foodCost ? '¥' + Number(row.foodCost).toFixed(0) : '—' }}</template>
+              </el-table-column>
+              <el-table-column prop="totalCost" label="总消费" width="80" align="right">
+                <template #default="{ row }">{{ row.totalCost ? '¥' + Number(row.totalCost).toFixed(0) : '—' }}</template>
+              </el-table-column>
+              <el-table-column prop="satisfaction" label="满意度" width="70" align="center">
+                <template #default="{ row }">{{ row.satisfaction ? Number(row.satisfaction).toFixed(1) : '—' }}</template>
+              </el-table-column>
+            </el-table>
+
+            <div class="table-pagination" v-if="tableTotal > tableSize">
+              <el-pagination
+                layout="prev, pager, next"
+                :total="tableTotal"
+                :page-size="tableSize"
+                :current-page="tablePage"
+                @current-change="handleTablePageChange"
+              />
+            </div>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
     </template>
   </div>
 </template>
@@ -737,5 +879,33 @@ function handleResize() {
   color: #8d95a3;
   text-align: center;
   padding: 24px 0;
+}
+
+/* ── Tabs ── */
+.analytics-tabs :deep(.el-tabs__header) {
+  margin-bottom: 16px;
+}
+
+.analytics-tabs :deep(.el-tabs__item.is-active) {
+  color: #5a8a6a;
+}
+
+.analytics-tabs :deep(.el-tabs__active-bar) {
+  background-color: #5a8a6a;
+}
+
+/* ── Table filter bar ── */
+.table-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.table-pagination {
+  display: flex;
+  justify-content: center;
+  margin-top: 16px;
 }
 </style>

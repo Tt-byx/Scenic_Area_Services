@@ -6,15 +6,32 @@ import {
   getKnowledgeList,
   deleteKnowledge,
   reprocessKnowledge,
+  updateKnowledge,
 } from '@/api/knowledge'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const documents = ref([])
 const uploadTitle = ref('')
+const uploadCategory = ref('未分类')
+const uploadScenicArea = ref('')
 const uploading = ref(false)
 const uploadProgress = ref(0)
 const selectedFile = ref(null)
 let pollTimer = null
+
+// 筛选
+const filterCategory = ref('')
+const filterScenicArea = ref('')
+
+// 编辑弹窗
+const editDialogVisible = ref(false)
+const editForm = ref({ id: null, title: '', content: '', category: '', scenicArea: '' })
+const editSaving = ref(false)
+
+const categoryOptions = [
+  '景区介绍', '票价政策', '交通指南', '游览路线',
+  '美食推荐', '历史文化', '活动资讯', '未分类',
+]
 
 const stageLabels = {
   parsing: '解析文档',
@@ -59,11 +76,19 @@ async function handleUpload() {
   uploading.value = true
   uploadProgress.value = 0
   try {
-    await uploadKnowledge(selectedFile.value, uploadTitle.value.trim(), (e) => {
-      if (e.total) uploadProgress.value = Math.round((e.loaded / e.total) * 100)
-    })
+    await uploadKnowledge(
+      selectedFile.value,
+      uploadTitle.value.trim(),
+      uploadCategory.value,
+      uploadScenicArea.value,
+      (e) => {
+        if (e.total) uploadProgress.value = Math.round((e.loaded / e.total) * 100)
+      }
+    )
     ElMessage.success('上传成功！')
     uploadTitle.value = ''
+    uploadCategory.value = '未分类'
+    uploadScenicArea.value = ''
     selectedFile.value = null
     uploadProgress.value = 0
     await fetchList()
@@ -87,11 +112,24 @@ async function handleProcess(doc) {
 
 async function fetchList() {
   try {
-    const data = await getKnowledgeList()
+    const params = {}
+    if (filterCategory.value) params.category = filterCategory.value
+    if (filterScenicArea.value) params.scenicArea = filterScenicArea.value
+    const data = await getKnowledgeList(params)
     documents.value = Array.isArray(data) ? data : []
   } catch (err) {
     console.error('获取文档列表失败:', err)
   }
+}
+
+function handleFilterChange() {
+  fetchList()
+}
+
+function clearFilters() {
+  filterCategory.value = ''
+  filterScenicArea.value = ''
+  fetchList()
 }
 
 async function handleDelete(doc) {
@@ -120,19 +158,45 @@ async function handleReprocess(doc) {
   }
 }
 
+function openEditDialog(doc) {
+  editForm.value = {
+    id: doc.id,
+    title: doc.title || '',
+    content: doc.content || '',
+    category: doc.category || '未分类',
+    scenicArea: doc.scenicArea || '',
+  }
+  editDialogVisible.value = true
+}
+
+async function handleEditSave() {
+  if (!editForm.value.title.trim()) {
+    ElMessage.warning('标题不能为空')
+    return
+  }
+  editSaving.value = true
+  try {
+    await updateKnowledge(editForm.value.id, {
+      title: editForm.value.title,
+      content: editForm.value.content,
+      category: editForm.value.category,
+      scenicArea: editForm.value.scenicArea,
+    })
+    ElMessage.success('保存成功，内容已更新时将自动重新向量化')
+    editDialogVisible.value = false
+    await fetchList()
+  } catch (err) {
+    ElMessage.error('保存失败: ' + (err.message || '未知错误'))
+  } finally {
+    editSaving.value = false
+  }
+}
+
 function formatTime(time) {
   if (!time) return '—'
   const d = new Date(time)
   const pad = (n) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-
-function getProgressStatus(row) {
-  if (row.vectorStatus === 0) return '待处理'
-  if (row.vectorStatus === 1) return stageLabels[row.processStage] || '处理中'
-  if (row.vectorStatus === 2) return `已完成 (${row.chunkCount || 0} 片段)`
-  if (row.vectorStatus === 3) return '处理失败'
-  return '未知'
 }
 
 function startPolling() {
@@ -164,7 +228,7 @@ onUnmounted(() => {
 
 <template>
   <div class="page">
-    <!-- Step 1: Upload -->
+    <!-- 上传面板 -->
     <div class="panel">
       <div class="panel-head">
         <el-icon :size="16"><Upload /></el-icon>
@@ -177,6 +241,17 @@ onUnmounted(() => {
           class="title-input"
           clearable
         />
+        <div class="upload-meta-row">
+          <el-select v-model="uploadCategory" placeholder="选择分类" style="width: 200px">
+            <el-option v-for="c in categoryOptions" :key="c" :label="c" :value="c" />
+          </el-select>
+          <el-input
+            v-model="uploadScenicArea"
+            placeholder="关联景区（可选）"
+            clearable
+            style="flex: 1"
+          />
+        </div>
         <el-upload
           class="upload-area"
           drag
@@ -193,7 +268,6 @@ onUnmounted(() => {
           </div>
         </el-upload>
 
-        <!-- Upload progress -->
         <div v-if="uploading" class="upload-progress">
           <el-progress
             :percentage="uploadProgress"
@@ -218,12 +292,33 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Step 2: Document list with process button -->
+    <!-- 文档列表 -->
     <div class="panel">
       <div class="panel-head">
         <el-icon :size="16"><FolderOpened /></el-icon>
         已上传文档
         <span class="count-badge" v-if="documents.length">{{ documents.length }}</span>
+      </div>
+
+      <!-- 筛选栏 -->
+      <div class="filter-bar">
+        <el-select
+          v-model="filterCategory"
+          placeholder="按分类筛选"
+          clearable
+          style="width: 180px"
+          @change="handleFilterChange"
+        >
+          <el-option v-for="c in categoryOptions" :key="c" :label="c" :value="c" />
+        </el-select>
+        <el-input
+          v-model="filterScenicArea"
+          placeholder="按景区筛选"
+          clearable
+          style="width: 200px"
+          @input="handleFilterChange"
+        />
+        <el-button text @click="clearFilters">清除筛选</el-button>
       </div>
 
       <el-table
@@ -233,7 +328,7 @@ onUnmounted(() => {
         stripe
         size="default"
       >
-        <el-table-column prop="title" label="文档标题" min-width="160">
+        <el-table-column prop="title" label="文档标题" min-width="140">
           <template #default="{ row }">
             <div class="doc-name">
               <el-icon :size="14" :style="{ color: (fileTypeStyle[row.fileType] || fileTypeStyle.docx).color }">
@@ -244,7 +339,19 @@ onUnmounted(() => {
           </template>
         </el-table-column>
 
-        <el-table-column prop="fileType" label="类型" width="80" align="center">
+        <el-table-column prop="category" label="分类" width="110" align="center">
+          <template #default="{ row }">
+            <el-tag size="small" type="info">{{ row.category || '未分类' }}</el-tag>
+          </template>
+        </el-table-column>
+
+        <el-table-column prop="scenicArea" label="关联景区" width="120" align="center">
+          <template #default="{ row }">
+            <span class="scenic-text">{{ row.scenicArea || '—' }}</span>
+          </template>
+        </el-table-column>
+
+        <el-table-column prop="fileType" label="类型" width="70" align="center">
           <template #default="{ row }">
             <span
               class="type-chip"
@@ -258,9 +365,8 @@ onUnmounted(() => {
           </template>
         </el-table-column>
 
-        <el-table-column label="处理进度" min-width="240">
+        <el-table-column label="处理进度" min-width="200">
           <template #default="{ row }">
-            <!-- Processing: show progress bar -->
             <div v-if="row.vectorStatus === 1" class="progress-cell">
               <el-progress
                 :percentage="row.processProgress || 0"
@@ -274,17 +380,14 @@ onUnmounted(() => {
                 {{ row.processProgress || 0 }}%
               </span>
             </div>
-            <!-- Completed -->
             <div v-else-if="row.vectorStatus === 2" class="status-done">
               <el-icon color="#5a8a6a"><CircleCheckFilled /></el-icon>
               <span>已完成 ({{ row.chunkCount || 0 }} 片段)</span>
             </div>
-            <!-- Failed -->
             <div v-else-if="row.vectorStatus === 3" class="status-fail">
               <el-icon color="#e05050"><CircleCloseFilled /></el-icon>
               <span>处理失败</span>
             </div>
-            <!-- Pending -->
             <div v-else class="status-pending">
               <el-icon color="#999"><Clock /></el-icon>
               <span>待处理</span>
@@ -292,15 +395,22 @@ onUnmounted(() => {
           </template>
         </el-table-column>
 
-        <el-table-column prop="createdAt" label="上传时间" width="150" align="center">
+        <el-table-column prop="updatedAt" label="最后更新" width="140" align="center">
           <template #default="{ row }">
-            <span class="time-cell">{{ formatTime(row.createdAt) }}</span>
+            <span class="time-cell">{{ formatTime(row.updatedAt) }}</span>
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" width="160" align="center" fixed="right">
+        <el-table-column label="操作" width="200" align="center" fixed="right">
           <template #default="{ row }">
-            <!-- Process button (pending) -->
+            <el-button
+              type="primary"
+              size="small"
+              text
+              @click="openEditDialog(row)"
+            >
+              <el-icon><Edit /></el-icon> 编辑
+            </el-button>
             <el-button
               v-if="row.vectorStatus === 0"
               type="success"
@@ -308,9 +418,8 @@ onUnmounted(() => {
               text
               @click="handleProcess(row)"
             >
-              <el-icon><VideoPlay /></el-icon> 开始处理
+              <el-icon><VideoPlay /></el-icon> 处理
             </el-button>
-            <!-- Retry button (failed) -->
             <el-button
               v-if="row.vectorStatus === 3"
               type="warning"
@@ -320,14 +429,13 @@ onUnmounted(() => {
             >
               <el-icon><RefreshRight /></el-icon> 重试
             </el-button>
-            <!-- Delete button -->
             <el-button
               type="danger"
               size="small"
               text
               @click="handleDelete(row)"
             >
-              <el-icon><Delete /></el-icon> 删除
+              <el-icon><Delete /></el-icon>
             </el-button>
           </template>
         </el-table-column>
@@ -341,12 +449,48 @@ onUnmounted(() => {
         </el-empty>
       </div>
     </div>
+
+    <!-- 编辑弹窗 -->
+    <el-dialog
+      v-model="editDialogVisible"
+      title="编辑知识条目"
+      width="680px"
+      :close-on-click-modal="false"
+    >
+      <el-form label-width="80px" label-position="left">
+        <el-form-item label="标题">
+          <el-input v-model="editForm.title" placeholder="文档标题" />
+        </el-form-item>
+        <el-form-item label="分类">
+          <el-select v-model="editForm.category" placeholder="选择分类" style="width: 100%">
+            <el-option v-for="c in categoryOptions" :key="c" :label="c" :value="c" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="关联景区">
+          <el-input v-model="editForm.scenicArea" placeholder="关联的景区名称" />
+        </el-form-item>
+        <el-form-item label="内容">
+          <el-input
+            v-model="editForm.content"
+            type="textarea"
+            :rows="12"
+            placeholder="知识条目内容"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="editSaving" @click="handleEditSave">
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <style scoped>
 .page {
-  max-width: 960px;
+  max-width: 1060px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -387,6 +531,11 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.upload-meta-row {
+  display: flex;
+  gap: 12px;
 }
 
 .title-input :deep(.el-input__wrapper) {
@@ -463,6 +612,14 @@ onUnmounted(() => {
   font-weight: 500;
 }
 
+/* ── Filter bar ── */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
 /* ── Table ── */
 .data-table {
   --el-table-border-color: var(--border-light);
@@ -484,6 +641,11 @@ onUnmounted(() => {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.5px;
+}
+
+.scenic-text {
+  font-size: 13px;
+  color: var(--text-secondary);
 }
 
 .time-cell {

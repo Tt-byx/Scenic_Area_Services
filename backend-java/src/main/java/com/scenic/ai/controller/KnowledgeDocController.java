@@ -19,14 +19,27 @@ public class KnowledgeDocController {
     @PostMapping("/upload")
     public Result<KnowledgeDoc> upload(
             @RequestParam("file") MultipartFile file,
-            @RequestParam("title") String title) {
-        KnowledgeDoc doc = knowledgeDocService.upload(title, file);
+            @RequestParam("title") String title,
+            @RequestParam(value = "category", defaultValue = "未分类") String category,
+            @RequestParam(value = "scenicArea", defaultValue = "") String scenicArea) {
+        KnowledgeDoc doc = knowledgeDocService.upload(title, file, category, scenicArea);
         return Result.success(doc);
     }
 
     @GetMapping("/list")
-    public Result<List<KnowledgeDoc>> list() {
+    public Result<List<KnowledgeDoc>> list(
+            @RequestParam(required = false) String category,
+            @RequestParam(required = false) String scenicArea) {
+        if ((category != null && !category.isEmpty()) || (scenicArea != null && !scenicArea.isEmpty())) {
+            return Result.success(knowledgeDocService.listFiltered(category, scenicArea));
+        }
         return Result.success(knowledgeDocService.listAll());
+    }
+
+    @PutMapping("/{id}")
+    public Result<KnowledgeDoc> update(@PathVariable Long id, @RequestBody KnowledgeDoc updateData) {
+        KnowledgeDoc doc = knowledgeDocService.update(id, updateData);
+        return Result.success(doc);
     }
 
     @DeleteMapping("/{id}")

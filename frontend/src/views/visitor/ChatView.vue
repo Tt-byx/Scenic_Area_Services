@@ -200,16 +200,13 @@ watch([() => chatStore.lipSyncText, () => chatStore.lipSyncDuration], ([text, du
   }
 })
 
-// 音频播放结束时停止口型同步
-watch(() => chatStore.audioPlaying, (playing) => {
-  if (!playing) {
-    live2dRef.value?.stopTextLipSync()
-  }
-})
+// 口型同步 + 表情重置 由 loading/audioPlaying 联合控制（见下方 watch）
+// 音频播放结束时停止口型同步 — 已合并到 loading watcher 中
 
 let _expressionResetTimer = null
 
 // loading 状态变化：控制口型同步 + 表情重置
+// 改进：等待音频播放完毕后再重置表情，避免覆盖正在播放的TTS中的表情
 watch(() => chatStore.loading, (loading) => {
   if (loading) {
     if (_expressionResetTimer) { clearTimeout(_expressionResetTimer); _expressionResetTimer = null }
@@ -218,12 +215,31 @@ watch(() => chatStore.loading, (loading) => {
   } else {
     live2dRef.value?.stopTextLipSync()
     live2dRef.value?.setLipSync(0)
-    if (_expressionResetTimer) clearTimeout(_expressionResetTimer)
-    _expressionResetTimer = setTimeout(() => {
-      _expressionResetTimer = null
-      live2dRef.value?.setExpression('Normal')
-      chatStore.currentExpression = 'Normal'
-    }, 2000)
+    // 不再立即设置重置定时器，等音频播完后再由 audioPlaying watcher 处理
+    // 如果没有音频（错误情况等），用4秒兜底重置
+    if (!chatStore.audioPlaying) {
+      _scheduleExpressionReset()
+    }
+  }
+})
+
+function _scheduleExpressionReset() {
+  if (_expressionResetTimer) clearTimeout(_expressionResetTimer)
+  _expressionResetTimer = setTimeout(() => {
+    _expressionResetTimer = null
+    live2dRef.value?.setExpression('Normal')
+    chatStore.currentExpression = 'Normal'
+  }, 4000)
+}
+
+// 音频播放结束时：停止口型同步 + 安排表情重置
+watch(() => chatStore.audioPlaying, (playing) => {
+  if (!playing) {
+    live2dRef.value?.stopTextLipSync()
+    // 音频播完后，延迟重置表情
+    if (!chatStore.loading) {
+      _scheduleExpressionReset()
+    }
   }
 })
 

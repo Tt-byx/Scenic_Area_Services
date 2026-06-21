@@ -23,20 +23,37 @@ async def detect_expression(text: str) -> str:
 
 
 def _keyword_fallback_expression(text: str) -> str:
-    """关键词表情检测（快速可靠，不依赖网络）"""
+    """关键词表情检测（扩展版，覆盖更多情感场景）"""
     if not text:
         return "Normal"
-    if any(w in text for w in ["抱歉", "无法", "不知道", "没有找到", "暂时无法", "错误", "失败", "遗憾", "对不起"]):
+    # 悲伤/道歉/遗憾
+    if any(w in text for w in ["抱歉", "无法", "不知道", "没有找到", "暂时无法", "错误", "失败",
+                                "遗憾", "对不起", "可惜", "伤心", "难过", "唉", "糟糕", "不幸",
+                                "失望", "遗憾的是", "没法", "无法提供", "未能"]):
         return "Cry"
-    if any(w in text for w in ["恭喜", "太好了", "开心", "高兴", "快乐", "棒", "赞", "喜欢", "美丽", "精彩", "欢迎", "祝", "感谢", "谢谢"]):
+    # 惊讶/好奇
+    if any(w in text for w in ["哇", "天哪", "居然", "竟然", "没想到", "真的吗", "哎呀",
+                                "不可思议", "太神奇了", "难以置信", "惊讶", "惊奇",
+                                "原来如此", "居然这样"]):
+        return "Star"
+    # 开心/赞美/祝福
+    if any(w in text for w in ["恭喜", "太好了", "开心", "高兴", "快乐", "棒", "赞", "喜欢",
+                                "美丽", "精彩", "欢迎", "祝", "感谢", "谢谢", "太棒了",
+                                "非常好", "真不错", "哈哈", "嘿嘿", "幸福", "满意",
+                                "舒服", "享受", "美妙", "壮观", "令人赞叹", "值得一看"]):
         return "Smile"
-    if any(w in text for w in ["注意", "小心", "警告", "禁止", "危险", "请勿", "不要"]):
+    # 警告/注意
+    if any(w in text for w in ["注意", "小心", "警告", "禁止", "危险", "请勿", "不要",
+                                "严禁", "当心", "务必", "切勿", "罚款", "违规"]):
         return "Angry"
+    # 思考/分析
+    if any(w in text for w in ["想想", "思考", "让我", "嗯", "分析", "研究", "考虑",
+                                "其实", "我觉得", "根据", "综合来看"]):
+        return "Circle"
+    # 疑问（放在最后，因为很多回复都会包含问句）
     if any(w in text for w in ["？", "吗", "呢", "什么", "怎么", "为什么", "请问", "好奇"]):
         return "Star"
-    if any(w in text for w in ["想想", "思考", "让我", "嗯"]):
-        return "Circle"
-    return "Smile"  # 默认微笑（导游应该友好）
+    return "Normal"  # 默认中性（不再默认微笑，避免所有回复都是笑）
 
 
 # ??????????????????????????????????????????????
@@ -171,6 +188,15 @@ async def chat_stream_endpoint(
         input_text = message
         full_text = ""
 
+        # 全局超时保护：最多 180 秒，防止任何原因导致永久卡住
+        deadline = asyncio.get_event_loop().time() + 180
+
+        def check_deadline():
+            if asyncio.get_event_loop().time() > deadline:
+                logger.error("[chat/stream] 全局超时 180s，强制结束")
+                return True
+            return False
+
         # 如果有音频输入，先 ASR 识别
         if audio is not None:
             try:
@@ -207,14 +233,24 @@ async def chat_stream_endpoint(
         audio_queue = asyncio.Queue()
 
         async def tts_worker(sentence: str, idx: int):
-            """后台 TTS 任务：合成音频并放入队列"""
+            """后台 TTS 任务：合成音频并放入队列（带超时保护）"""
             try:
                 clean = strip_markdown(sentence.strip())
                 if clean:
-                    audio_bytes = await tts_service.synthesize(clean)
+                    # 给 TTS 加 15 秒超时，防止网络问题导致永久卡住
+                    audio_bytes = await asyncio.wait_for(
+                        tts_service.synthesize(clean), timeout=15.0
+                    )
                     if audio_bytes:
                         audio_b64 = base64.b64encode(audio_bytes).decode()
                         await audio_queue.put((idx, audio_b64))
+                    else:
+                        await audio_queue.put((idx, None))
+                else:
+                    await audio_queue.put((idx, None))
+            except asyncio.TimeoutError:
+                logger.warning(f"TTS timeout for sentence {idx}: {sentence[:30]}")
+                await audio_queue.put((idx, None))
             except Exception as e:
                 logger.warning(f"TTS failed for sentence {idx}: {e}")
                 await audio_queue.put((idx, None))
@@ -226,6 +262,9 @@ async def chat_stream_endpoint(
         tts_counter = 0
         tts_tasks = []
 
+        # 用 asyncio.Event 通知消费者：所有任务已创建完毕
+        all_sentences_queued = asyncio.Event()
+
         async def llm_producer():
             """LLM 生产者：读取流式 token，文本直接 yield，句子交给 TTS 后台"""
             nonlocal sentence_buffer, first_expression_sent, tts_counter, full_text
@@ -235,16 +274,14 @@ async def chat_stream_endpoint(
                     full_text += text_chunk
                     await audio_queue.put(("text", text_chunk))
 
-                    # 收集到一定文字后发送表情
-                    if not first_expression_sent and len(full_text) > 10:
-                        first_expression_sent = True
-                        expression = _keyword_fallback_expression(full_text)
-                        await audio_queue.put(("expression", expression))
-
-                    # 遇到句号等标点，将句子交给后台 TTS（不阻塞）
+                    # 遇到句号等标点，将句子交给后台 TTS 并检测表情（不阻塞）
                     if sentence_buffer and sentence_buffer[-1] in end_marks:
                         sentence = sentence_buffer.strip()
                         if sentence:
+                            # 每句话都检测表情（核心改进：表情随内容变化）
+                            expr = _keyword_fallback_expression(sentence)
+                            first_expression_sent = True
+                            await audio_queue.put(("expression", expr))
                             task = asyncio.create_task(tts_worker(sentence, tts_counter))
                             tts_tasks.append(task)
                             tts_counter += 1
@@ -252,17 +289,27 @@ async def chat_stream_endpoint(
             except Exception as e:
                 logger.error(f"LLM failed: {e}")
                 await audio_queue.put(("error", str(e)))
+            finally:
+                # LLM 流结束后通知消费者
+                all_sentences_queued.set()
 
         # 启动 LLM 生产者（在后台运行）
         llm_task = asyncio.create_task(llm_producer())
 
         # 消费者：从队列中取出结果并 yield
         tts_done_count = 0
-        while not llm_task.done() or not audio_queue.empty() or tts_done_count < tts_counter:
+        while True:
             try:
                 item = await asyncio.wait_for(audio_queue.get(), timeout=0.1)
             except asyncio.TimeoutError:
-                if llm_task.done() and audio_queue.empty() and tts_done_count >= tts_counter:
+                # 退出条件：LLM完成 + 所有句子已入队 + 所有TTS结果已处理 + 队列空
+                if (llm_task.done() and all_sentences_queued.is_set()
+                        and audio_queue.empty() and tts_done_count >= tts_counter):
+                    break
+                # 全局超时保护
+                if check_deadline():
+                    if not llm_task.done():
+                        llm_task.cancel()
                     break
                 continue
 
@@ -279,9 +326,15 @@ async def chat_stream_endpoint(
                 if audio_b64:
                     yield _sse_event("audio_chunk", {"audio": audio_b64, "format": "mp3"})
 
-        # 等待所有 TTS 任务完成（处理剩余）
+        # 等待所有 TTS 任务完成（带超时保护，最多等20秒）
         if tts_tasks:
-            await asyncio.gather(*tts_tasks, return_exceptions=True)
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*tts_tasks, return_exceptions=True),
+                    timeout=20.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"TTS gather timeout, {len(tts_tasks)} tasks")
             # 收集队列中剩余的 TTS 结果
             while not audio_queue.empty():
                 item = audio_queue.get_nowait()
@@ -290,26 +343,33 @@ async def chat_stream_endpoint(
                     if audio_b64:
                         yield _sse_event("audio_chunk", {"audio": audio_b64, "format": "mp3"})
 
-        # 处理剩余未合成的文本
-        if sentence_buffer.strip():
+        # 如果有剩余未完结的文本，也发送表情和TTS（带超时）
+        remaining = sentence_buffer.strip()
+        if remaining:
+            expr = _keyword_fallback_expression(remaining)
+            yield _sse_event("expression", {"expression": expr})
             try:
-                clean_remaining = strip_markdown(sentence_buffer.strip())
+                clean_remaining = strip_markdown(remaining)
                 if clean_remaining:
-                    audio_bytes = await tts_service.synthesize(clean_remaining)
+                    audio_bytes = await asyncio.wait_for(
+                        tts_service.synthesize(clean_remaining), timeout=15.0
+                    )
                     if audio_bytes:
                         audio_b64 = base64.b64encode(audio_bytes).decode()
                         yield _sse_event("audio_chunk", {"audio": audio_b64, "format": "mp3"})
+            except asyncio.TimeoutError:
+                logger.warning("TTS final timeout")
             except Exception as e:
                 logger.warning(f"TTS final failed: {e}")
-
-        # 如果没有任何句子完成（极短回复），发送默认表情
-        if not first_expression_sent:
+        elif not first_expression_sent:
+            # 极短回复（没有完整句子），发送默认表情
             yield _sse_event("expression", {"expression": _keyword_fallback_expression(full_text)})
 
         yield _sse_event("done", {
             "session_id": session_id,
             "total_text": full_text,
         })
+        logger.info(f"[chat/stream] 完成: {len(full_text)}字, {tts_counter}句TTS")
 
     return StreamingResponse(
         event_generator(),
