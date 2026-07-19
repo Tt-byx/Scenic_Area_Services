@@ -61,7 +61,20 @@ async def chat_with_mimo(message: str, user_emotion: str = None) -> str:
         max_tokens=512,
     )
     msg = response.choices[0].message
-    return msg.content or ""
+    content = msg.content or ""
+    if not content.strip():
+        logger.warning("[chat_with_mimo] 返回空内容，重试一次")
+        response = await _get_client().chat.completions.create(
+            model=settings.mimo_model,
+            messages=[
+                {"role": "system", "content": _build_system_prompt(user_emotion)},
+                {"role": "user", "content": message},
+            ],
+            temperature=0.8,
+            max_tokens=512,
+        )
+        content = response.choices[0].message.content or ""
+    return content
 
 
 async def chat_with_rag(message: str, user_emotion: str = None) -> str:
@@ -78,7 +91,17 @@ async def chat_with_rag(message: str, user_emotion: str = None) -> str:
         max_tokens=512,
     )
     msg = response.choices[0].message
-    return msg.content or ""
+    content = msg.content or ""
+    if not content.strip():
+        logger.warning("[chat_with_rag] 返回空内容，重试一次")
+        response = await _get_client().chat.completions.create(
+            model=settings.mimo_model,
+            messages=messages,
+            temperature=0.8,
+            max_tokens=512,
+        )
+        content = response.choices[0].message.content or ""
+    return content
 
 
 async def chat_stream(message: str, context_chunks: list[str] = None, user_emotion: str = None):
